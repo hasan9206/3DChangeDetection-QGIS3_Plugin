@@ -218,7 +218,7 @@ class Change:
         """Load vectors for QGIS table of contents"""
         self.dlg.structure_list.clear()
         layers = [layer for layer in QgsProject.instance().mapLayers().values()]
-        vector_layers = []
+        vector_layers = ["None"]
         for layer in layers:
             if layer.type() == QgsMapLayer.VectorLayer:
                 vector_layers.append(layer.name())
@@ -299,10 +299,9 @@ class Change:
 
         mask_layer = self.inVector
 
-        #old_clip = r'C:\OSGeo4W64\apps\qgis\python\plugins\change\old_clip.tif'
         old_clip = QgsProcessingUtils.generateTempFilename('old_clip.tif')
 
-        proc = processing.run("gdal:cliprasterbymasklayer",
+        processing.run("gdal:cliprasterbymasklayer",
                        {'INPUT': old_input,
                         'MASK': mask_layer,
                         'NODATA': -9999,
@@ -311,9 +310,13 @@ class Change:
                         'KEEP_RESOLUTION': False,
                         'OUTPUT': old_clip}
                        )
-        output = QgsRasterLayer(old_clip)
+
+        output = QgsRasterLayer(old_clip, "Old Data Clipped")
+
+        #QgsMapLayerRegistry.instance().addMapLayer(output)
 
         return output
+
 
     def clip_newDEM(self):
 
@@ -321,23 +324,22 @@ class Change:
 
         mask_layer = self.inVector
 
-        #new_clip = r'C:\OSGeo4W64\apps\qgis\python\plugins\change\new_clip.tif'
         new_clip = QgsProcessingUtils.generateTempFilename('new_clip.tif')
 
-        proc = processing.run("gdal:cliprasterbymasklayer",
+        processing.run("gdal:cliprasterbymasklayer",
                        {'INPUT': old_input,
                         'MASK': mask_layer,
                         'NODATA': -9999,
                         'ALPHA_BAND': False,
                         'CROP_TO_CUTLINE': False,
                         'KEEP_RESOLUTION': False,
-                        'OUTPUT': new_clip }
+                        'OUTPUT': new_clip}
                        )
-        output = QgsRasterLayer(new_clip, "clippedNewDEM")
-
-        #output = QgsRasterLayer(proc['OUTPUT'])
+        output = QgsRasterLayer(new_clip, "New Data Clipped")
 
         QgsProject.instance().addMapLayer(output)
+
+        #QgsMapLayerRegistry.instance().addMapLayer(output)
 
         return output
 
@@ -444,6 +446,169 @@ class Change:
 
         layer.triggerRepaint()
 
+    def Error_map_old(self):
+    """Creates tempory files for outputs and runs QGIS core algorithms for ruggedness and slope.
+        Uses ruggedness and slope to highlight pixel variability in old DEM input"""
+
+        input = self.olddem
+
+        rug_output = QgsProcessingUtils.generateTempFilename('old_rug.tif')
+
+        processing.run("qgis:ruggednessindex",
+                       {'INPUT': input,
+                        'Z_FACTOR': 1,
+                        'OUTPUT': rug_output}
+                       )
+        output = QgsRasterLayer(rug_output)
+
+        slope_output = QgsProcessingUtils.generateTempFilename('old_slope.tif')
+
+        processing.run("qgis:slope",
+                       {'INPUT': output,
+                        'Z_FACTOR': 1,
+                        'OUTPUT': slope_output}
+                       )
+        final_output = QgsRasterLayer(slope_output, "old error map")
+
+        return final_output
+
+    def Error_map_new(self):
+      """Uses ruggedness and slope to highlight pixel variability in new DEM input"""
+
+        input = self.newdem
+
+        rug_output = QgsProcessingUtils.generateTempFilename('new_rug.tif')
+
+        processing.run("qgis:ruggednessindex",
+                       {'INPUT': input,
+                        'Z_FACTOR': 1,
+                        'OUTPUT': rug_output}
+                       )
+        output = QgsRasterLayer(rug_output)
+
+        slope_output = QgsProcessingUtils.generateTempFilename('new_slope.tif')
+
+        processing.run("qgis:slope",
+                       {'INPUT': output,
+                        'Z_FACTOR': 1,
+                        'OUTPUT': slope_output}
+                       )
+        final_output = QgsRasterLayer(slope_output, "new error map")
+
+        return final_output
+        
+
+        def old_error(self, input_raster):
+        """Quantifies the locations that are most likely errors in the old dem input using the raster calculator"""
+
+        raster = input_raster
+        if not raster.isValid():
+            print("Layer failed to load!")
+
+        entry = QgsRasterCalculatorEntry()
+        entry.raster = raster
+        entry.bandNumber = 1
+        entry.ref = 'old@1'
+
+        entries = [entry]
+
+        e = raster.extent()
+        w = raster.width()
+        h = raster.height()
+
+        outRaster = QgsProcessingUtils.generateTempFilename('old_error.tif')
+
+        change = QgsRasterCalculator('%s = 0' % (entry.ref), outRaster, "GTiff", e, w, h,
+                                     entries)
+        change.processCalculation()
+
+        output = QgsRasterLayer(outRaster, "old input error")
+
+        #QgsProject.instance().addMapLayer(output)
+
+        return output
+
+    def new_error(self, input_raster):
+        """Quantifies the locations that are most likely errors in the new dem input"""
+
+        raster = input_raster
+        if not raster.isValid():
+            print("Layer failed to load!")
+
+        entry = QgsRasterCalculatorEntry()
+        entry.raster = raster
+        entry.bandNumber = 1
+        entry.ref = 'new@1'
+
+        entries = [entry]
+
+        e = raster.extent()
+        w = raster.width()
+        h = raster.height()
+
+        outRaster = QgsProcessingUtils.generateTempFilename('new_error.tif')
+
+        change = QgsRasterCalculator('%s = 0' % (entry.ref), outRaster, "GTiff", e, w, h,
+                                     entries)
+        change.processCalculation()
+
+        output = QgsRasterLayer(outRaster, "new input error")
+
+        #QgsProject.instance().addMapLayer(output)
+
+        return output
+
+        def old_error_color(self, old_error):
+        """setting symbology for old error map"""
+
+        layer = old_error
+
+        lst = []
+        qri = QgsColorRampShader.ColorRampItem
+        lst.append(qri(0, QColor(247, 247, 247, 0)))
+        lst.append(qri(1, QColor(167, 0, 252, 255), 'Old DEM Input Errors'))
+
+        myRasterShader = QgsRasterShader()
+        myColorRamp = QgsColorRampShader()
+
+        myColorRamp.setColorRampItemList(lst)
+        myColorRamp.setColorRampType(QgsColorRampShader.Interpolated)
+        myRasterShader.setRasterShaderFunction(myColorRamp)
+
+        myPseudoRenderer = QgsSingleBandPseudoColorRenderer(layer.dataProvider(), layer.type(), myRasterShader)
+
+        layer.setRenderer(myPseudoRenderer)
+
+        layer.triggerRepaint()
+
+        QgsProject.instance().addMapLayer(layer)
+
+    def new_error_color(self, new_error):
+        """setting symbology for new error map"""
+
+        layer = new_error
+
+        lst = []
+        qri = QgsColorRampShader.ColorRampItem
+        lst.append(qri(0, QColor(247, 247, 247, 0)))
+        lst.append(qri(1, QColor(167, 0, 252, 255), 'New DEM Input Errors'))
+
+        myRasterShader = QgsRasterShader()
+        myColorRamp = QgsColorRampShader()
+
+        myColorRamp.setColorRampItemList(lst)
+        myColorRamp.setColorRampType(QgsColorRampShader.Interpolated)
+        myRasterShader.setRasterShaderFunction(myColorRamp)
+
+        myPseudoRenderer = QgsSingleBandPseudoColorRenderer(layer.dataProvider(), layer.type(), myRasterShader)
+
+        layer.setRenderer(myPseudoRenderer)
+
+        layer.triggerRepaint()
+
+        QgsProject.instance().addMapLayer(layer)
+
+
     def unload(self):
         """Removes the plugin menu item and icon from QGIS GUI."""
         for action in self.actions:
@@ -464,9 +629,10 @@ class Change:
         result = self.dlg.exec_()
         # See if OK was pressed
         if result:
-            # Do something useful here - delete the line containing pass and
-            # substitute with your code.
             self.setVariable()
             self.rasterCalculation(self.clip_oldDEM(), self.clip_newDEM())
+            self.old_error_color(self.old_error(self.Error_map_old()))
+            self.new_error_color(self.new_error(self.Error_map_new()))
             self.addLayers()
             self.colorRamp()
+
